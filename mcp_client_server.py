@@ -317,24 +317,20 @@ async def list_directory(directory_path: str, file_extensions: Optional[List[str
         }
 
 # Server startup
-async def start_server():
-    """Start the MCP server"""
+async def startup_event():
+    """Initialize database pool on startup"""
     await init_db_pool()
     print("MCP Server started successfully")
 
+# Add startup event
+mcp.add_event_handler("startup", startup_event)
+
 if __name__ == "__main__":
-    # Run the server with SSE support
-    import uvicorn
-    
-    # Initialize database pool before starting server
-    asyncio.create_task(start_server())
-    
-    # Run with uvicorn for SSE support
-    uvicorn.run(
-        "mcp_server:mcp.get_sse_app()",
-        host="localhost",
-        port=8000,
-        log_level="info"
+    # Run the FastMCP server
+    mcp.run(
+        transport="sse",
+        host="localhost", 
+        port=8000
     )
 
 # ================================
@@ -345,8 +341,8 @@ import asyncio
 import json
 import httpx
 from typing import Dict, Any, List, Optional
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.sse import sse_client
+from mcp import ClientSession
+from mcp.client.sse import SseServerParameters
 
 class CustomLLMAPI:
     """Custom LLM API client for the specified endpoint"""
@@ -400,8 +396,21 @@ class MCPClient:
     async def connect_to_mcp_server(self):
         """Connect to the MCP server via SSE"""
         try:
-            # Connect to MCP server using SSE
-            self.mcp_session = await sse_client(f"{self.mcp_server_url}/sse")
+            import httpx
+            from mcp.client.sse import SseServerParameters
+            
+            # Create SSE server parameters
+            server_params = SseServerParameters(
+                url=f"{self.mcp_server_url}/sse"
+            )
+            
+            # Create and start session
+            self.mcp_session = ClientSession(server_params)
+            await self.mcp_session.__aenter__()
+            
+            # Initialize the session
+            init_result = await self.mcp_session.initialize()
+            print(f"MCP Session initialized: {init_result}")
             
             # List available tools
             tools_response = await self.mcp_session.list_tools()
@@ -421,7 +430,20 @@ class MCPClient:
                 return {"error": f"Tool '{tool_name}' not available"}
             
             result = await self.mcp_session.call_tool(tool_name, arguments)
-            return result.content[0].text if result.content else {"error": "No result returned"}
+            
+            # Extract content from result
+            if result.content:
+                if hasattr(result.content[0], 'text'):
+                    try:
+                        # Try to parse as JSON if it's a string
+                        content = result.content[0].text
+                        return json.loads(content) if isinstance(content, str) else content
+                    except json.JSONDecodeError:
+                        return {"result": result.content[0].text}
+                else:
+                    return {"result": str(result.content[0])}
+            else:
+                return {"error": "No result returned"}
             
         except Exception as e:
             return {
@@ -539,7 +561,10 @@ class MCPClient:
     async def close(self):
         """Close connections"""
         if self.mcp_session:
-            await self.mcp_session.close()
+            try:
+                await self.mcp_session.__aexit__(None, None, None)
+            except Exception as e:
+                print(f"Error closing MCP session: {e}")
         await self.llm_api.close()
 
 # Example usage
@@ -593,94 +618,4 @@ MCP_SERVER_CONFIG = {
 # Custom LLM API configuration
 LLM_API_CONFIG = {
     "api_key": os.getenv("LLM_API_KEY", ""),
-    "apisid": os.getenv("LLM_APISID", ""),
-    "apievn": os.getenv("LLM_APIEVN", ""),
-    "apiempno": os.getenv("LLM_APIEMPNO", ""),
-}
-
-# File system configuration
-FILESYSTEM_CONFIG = {
-    "allowed_extensions": [".csv", ".pdf", ".parquet"],
-    "max_file_size": 100 * 1024 * 1024,  # 100MB
-    "base_directory": os.getenv("FS_BASE_DIR", "./data"),
-}
-
-# ================================
-# run_server.py - Server runner
-# ================================
-
-import asyncio
-import uvicorn
-from mcp_server import mcp, init_db_pool
-
-async def main():
-    """Run the MCP server"""
-    await init_db_pool()
-    
-    config = uvicorn.Config(
-        app=mcp.get_sse_app(),
-        host="localhost",
-        port=8000,
-        log_level="info"
-    )
-    
-    server = uvicorn.Server(config)
-    await server.serve()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-# ================================
-# run_client.py - Client runner
-# ================================
-
-import asyncio
-from mcp_client import CustomLLMAPI, MCPClient
-from config import LLM_API_CONFIG
-
-async def main():
-    """Run the MCP client"""
-    # Initialize custom LLM API client with config
-    llm_api = CustomLLMAPI(**LLM_API_CONFIG)
-    
-    # Initialize MCP client
-    mcp_client = MCPClient(llm_api)
-    
-    try:
-        # Connect to MCP server
-        if await mcp_client.connect_to_mcp_server():
-            print("Successfully connected to MCP server")
-            # Run interactive session
-            await mcp_client.interactive_session()
-        else:
-            print("Failed to connect to MCP server")
-    finally:
-        # Clean up
-        await mcp_client.close()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-# ================================
-# .env - Environment variables file
-# ================================
-
-# Database configuration
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_password
-POSTGRES_DB=your_database
-
-# MCP Server configuration
-MCP_HOST=localhost
-MCP_PORT=8000
-
-# Custom LLM API configuration
-LLM_API_KEY=your-api-key
-LLM_APISID=your-apisid
-LLM_APIEVN=your-apievn
-LLM_APIEMPNO=your-apiempno
-
-# Filesystem configuration
-FS_BASE_DIR=./data
+    "apisid": os.getenv("LLM_APISID", ""
