@@ -25,10 +25,13 @@ mcp = FastMCP("PostgreSQL-FileSystem-Server")
 # Global database pool
 db_pool: Optional[asyncpg.Pool] = None
 
-# Configuration
-DATABASE_URL = "postgresql://username:password@localhost:5432/database_name"
-SERVER_HOST = "localhost"
-SERVER_PORT = 8000
+# Import configuration
+from config import config
+
+# Use configuration from config.py
+DATABASE_URL = config.database_url
+SERVER_HOST = config.SERVER_HOST
+SERVER_PORT = config.SERVER_PORT
 
 async def initialize_database():
     """Initialize database connection pool"""
@@ -393,23 +396,17 @@ async def shutdown():
         logger.info("Database pool closed")
 
 if __name__ == "__main__":
-    # Set up the FastMCP app
-    app = mcp.create_app()
-    
-    # Add startup and shutdown events
-    @app.on_event("startup")
-    async def startup_event():
-        await startup()
-    
-    @app.on_event("shutdown")
-    async def shutdown_event():
-        await shutdown()
+    async def run_server():
+        """Run the FastMCP server"""
+        await initialize_database()
+        logger.info("FastMCP Server initialized")
+        
+        # Run the MCP server
+        logger.info(f"Starting FastMCP server on {SERVER_HOST}:{SERVER_PORT}")
+        await mcp.run(
+            host=SERVER_HOST,
+            port=SERVER_PORT
+        )
     
     # Run the server
-    logger.info(f"Starting FastMCP server on {SERVER_HOST}:{SERVER_PORT}")
-    uvicorn.run(
-        app,
-        host=SERVER_HOST,
-        port=SERVER_PORT,
-        log_level="info"
-        )
+    asyncio.run(run_server())
